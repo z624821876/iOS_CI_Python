@@ -2,7 +2,7 @@ from urllib import request
 import json
 import ssl
 
-Ding_Hook_Url = "***钉钉机器人 webhook_url"
+Ding_Hook_Url = "https://oapi.dingtalk.com/robot/send?access_token=95035eb102e9915b3df6dd7a4fa25fe0d101d7d3b9be3e63327285ecefcfacd4"
 
 
 class DingHook(object):
