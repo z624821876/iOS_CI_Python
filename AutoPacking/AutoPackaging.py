@@ -74,31 +74,33 @@ def build_workspace(project_path, project_scheme, configuration, project_teamNam
 
 
 # 步骤三 生成配置ipa包
-def build_ipa(project_path, option_plist, project_scheme, filename_ipa):
+def build_ipa(project_path, option_plist, project_scheme):
     build_path = '%s/build' % project_path
     if os.path.exists(build_path):
-        signCmd = 'xcodebuild -exportArchive -archivePath %s/%s.xcarchive -exportOptionsPlist %s -exportPath %s' % (build_path, project_scheme, option_plist, build_path)
-        print(signCmd)
-        os.system(signCmd)
-        return filename_ipa
+        sign_cmd = 'xcodebuild -exportArchive -archivePath %s/%s.xcarchive -exportOptionsPlist %s -exportPath %s' % (build_path, project_scheme, option_plist, build_path)
+        print(sign_cmd)
+        os.system(sign_cmd)
+
+        ipa_path = os.path.join(build_path, '%s.ipa' % project_scheme)
+        return ipa_path
     else:
+        raise Exception("没有找到app文件")
         print("没有找到app文件")
         return ''
 
 
 # 步骤四  上传fir
-def upload_ipa(project_path, ipa_name, fir_token, branch):
-    ipa_path = os.path.join(project_path, "build", ipa_name)
+def upload_ipa(ipa_path, fir_token, branch):
     print("准备上传ipa %s " % ipa_path)
     short_path = None
     if branch == 1:
-        short_path = "matermastermaster"
+        short_path = "masterFirPath"
     else:
-        short_path = "devdevdev"
+        short_path = "devFirPath"
     cmd = "fir publish %s --token=%s --short=%s -Q" % (ipa_path, fir_token, short_path)
     os.system(cmd)
-    complete_path = "https://fir.im/" + short_path
-    return complete_path
+    fir_url = "https://fir.im/" + short_path
+    return fir_url
 
 
 # 步骤五  发送钉钉消息
@@ -123,7 +125,7 @@ def main():
     print("参数二(fir token)")
     print("参数三分支:(1: master, 2: dev)")
     paking_type = 2
-    fir_token = "fir token 需要修改"
+    fir_token = "需要替换  fir 账号 api token"
     branch = 2
     for index, item in enumerate(sys.argv):
         if index == 1:
@@ -152,7 +154,6 @@ def main():
     plist_path = None
     configuration = None
 
-    # 需要放置相同名称的plist文件到脚本文件夹中
     if paking_type == 1:
         configuration = "Debug"
         plist_path = os.path.join(current_path, "dev.plist")
@@ -163,8 +164,6 @@ def main():
     # 获取当前scheme
     project_scheme = get_scheme()
 
-    # 更新创建plist文件
-    filename_ipa = '%s.ipa' % project_scheme
     #####################################################################
     #####################################################################
 
@@ -175,10 +174,10 @@ def main():
     build_workspace(project_path, project_scheme, configuration, project_teamName, profile_name)
 
     # 步骤三 生成配置ipa包
-    build_ipa(project_path, plist_path, project_scheme, filename_ipa)
+    ipa_path = build_ipa(project_path, plist_path, project_scheme)
 
     # 步骤四  上传fir
-    fir_url = upload_ipa(project_path, filename_ipa, fir_token, branch)
+    fir_url = upload_ipa(ipa_path, fir_token, branch)
 
     # 步骤五  发送钉钉消息
     send_message(fir_url, branch)
