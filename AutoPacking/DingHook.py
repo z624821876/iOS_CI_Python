@@ -2,7 +2,7 @@ from urllib import request
 import json
 import ssl
 
-Ding_Hook_Url = "https://oapi.dingtalk.com/robot/send?access_token=95035eb102e9915b3df6dd7a4fa25fe0d101d7d3b9be3e63327285ecefcfacd4"
+Ding_Hook_Url = "https://oapi.dingtalk.com/robot/send?access_token=token"
 
 
 class DingHook(object):
@@ -24,12 +24,11 @@ class DingHook(object):
         """构建数据"""
         print("构建钉钉消息数据")
         data = dict()
-        data["msgtype"] = "link"
-        data["link"] = {}
-        data["link"]["text"] = text
-        data["link"]["title"] = title
-        data["link"]["picUrl"] = picurl
-        data["link"]["messageUrl"] = messageurl
+        data["msgtype"] = "markdown"
+        data["markdown"] = {}
+        data["markdown"]["title"] = title
+        data["markdown"]["text"] = text
+  
         data = json.dumps(data)
         content = self.post_request(data)
         print("钉钉消息发送成功")
