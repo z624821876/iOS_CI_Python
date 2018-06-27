@@ -4,6 +4,9 @@
     <content url="file://$MODULE_DIR$" />
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />
+    <orderEntry type="module" module-name="AutoPackaging.py" />
+    <orderEntry type="module" module-name="AutoPackaging1.py" />
+    <orderEntry type="module" module-name="AutoPackaging.py" />
   </component>
   <component name="TestRunnerService">
     <option name="PROJECT_TEST_RUNNER" value="Unittests" />

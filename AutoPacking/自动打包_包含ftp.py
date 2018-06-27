@@ -9,7 +9,16 @@
 # 获取下载地址二维码需配置access_key secret_key bucket_name qiniu_domain
 # 上传ftp需设置ftp_ip ftp_user ftp_pwd ftp_root_path
 # Build Settings中Preprocessor Macros中 添加release宏isAppOnline=1用于替换isAppOnline，修改测试环境
-# python3 FanbeiLoan/scripts/packingtool/AutoPackaging.py TEST(测试环境) origin/develop(分支) YES(是否发送钉钉消息) YES(是否上传ipa) $'1.' $'2.'(app更新内容， 多行文字, 行内不可加空格)
+# python3 FanbeiLoan/scripts/packingtool/AutoPackaging.py TEST(测试环境) origin/develop(分支) YES(是否发送钉钉消息) YES(是否上传ipa) YES(是否使用默认证书打包) $'1.' $'2.'(app更新内容， 多行文字, 行内不可加空格)
+
+from PIL import Image
+from ftplib import FTP
+from retry import retry
+from qiniu import Auth, put_file, etag
+from DingHook import DingHook
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.application import MIMEApplication
 
 import os
 import re
@@ -21,36 +30,44 @@ import random
 import plistlib
 import requests
 import qrcode
-from PIL import Image
-from ftplib import FTP
-from retry import retry
-from qiniu import Auth, put_file, etag
-from DingHook import DingHook
+import smtplib
+import email.mime.multipart
+import email.mime.text
 
 ################################################################################
 # # 注意: 请配置下面的信息
 ################################################################################
 
+# 服务器环境 不可修改 对应jenkins参数
+server_infos = ['TEST', 'PRE_TEST', 'RELEASE']
+# 其他证书打包
+other_sign_plist = 'other_adhoc.plist'
+other_sign_identity = 'iPhone Distribution: Huaiyang Boc Fullerton Community Bank'
 # scripts根目录
 scripts_path = 'scripts/'
 # app store账号
-develop_name = '账号'
-develop_password = '密码'
+develop_name = 'zhouyihua@edspay.com'
+develop_password = 'Ald123456'
 # fir token
-fir_token = 'token'
+fir_token = 'fe778f3d9f8b9dd5243fe4cb4e0ff242'
 # qiniu
-access_key = 'aaaa'
-secret_key = 'aaaaa'
-bucket_name = 'aaaa'
-qiniu_domain = '1111111'
+access_key = '9rhXOhTp-x6Y9eUlrB7mR_Hk0zDQLFv_VWwKKHWn'
+secret_key = 'TpI9pdTlLQLB8hkWIS4fiEE98GM0yrre38lPw56Y'
+bucket_name = 'firqr'
+qiniu_domain = 'p64yljwwa.bkt.clouddn.com'
 # ftp name pwd
-ftp_ip = 'ftp_ip'
-ftp_user = '账号'
-ftp_pwd = '密码'
+ftp_ip = '192.168.106.226'
+ftp_user = 'chanpin'
+ftp_pwd = 'cp@123!'
 ftp_root_path = '/客户端历史版本安装包/'
-
-#服务器环境 不可修改
-server_infos = ['TEST', 'PRE_TEST', 'RELEASE']
+# email
+smtp_host = 'smtp.mxhichina.com'
+email_user = 'wangzonghui@edspay.com'
+email_password = 'Ryan123456'
+recipient_addresses = ''
+# Bugly
+bugly_app_id = '5eaeaab3d8' #DEBUG
+bugly_app_key = 'b2ee11f3-1009-4fda-bf73-e5f812c824f3'
 
 
 # 执行命令
@@ -66,18 +83,46 @@ def process_call(cmd, desc):
 
 # 读取plist文件
 def read_plist(path):
+    print('read plist path: ', path)
     with open(path, 'rb') as f:
         datas = f.read()
     return plistlib.loads(datas)
 
 
+# 创建ftp缓存目录
+def make_cache_path(project_path):
+    temp_path = get_build_cache_path(project_path)
+
+    if os.path.exists(temp_path):
+        clean_cmd = 'rm -r %s' % temp_path
+        process_call(clean_cmd, '移除.buildcache目录')
+
+    create_cmd = 'cd %s; mkdir .buildcache' % current_path
+    process_call(create_cmd, '创建临时目录.buildcache')
+
+
+def add_cache(project_path, project_scheme, server_info):
+    build_path = get_build_path(project_path)
+    ipa_path = os.path.join(build_path, '%s.ipa' % project_scheme)
+    file_name = '%s.ipa' % server_info
+
+    file_path = os.path.join(get_build_cache_path(project_path), file_name)
+    
+    move_cmd = 'mv %s %s' % (ipa_path, file_path,)
+    return process_call(move_cmd, 'ipa移到cache目录')
+
+
 # 创建ftp
+@retry(tries=3, delay=1, jitter=2)
 def ftpconnect(host, username, password):
-    ftp = FTP()
-    ftp.connect(host, 21)
-    ftp.login(username, password)
-    ftp.encoding = 'GBK'
-    return ftp
+    try:
+        ftp = FTP()
+        ftp.connect(host, 21)
+        ftp.login(username, password)
+        ftp.encoding = 'GBK'
+        return ftp
+    except:
+        print('ftp登录失败')
 
 
 # 创建ftp目录
@@ -90,39 +135,113 @@ def create_path(ftp, path, folders):
         path = os.path.join(path, folder)
 
 
+# ftp开始上传文件
+@retry(tries=3, delay=1, jitter=2)
+def start_upload_ftp(ftp, local_path, remote_path):
+    try:
+        print('local path:' + local_path)
+        print('remote path:' + remote_path)
+        buf_size = 1024
+        fp = open(local_path, 'rb')
+        ftp.storbinary('STOR ' + remote_path, fp, buf_size)
+        ftp.set_debuglevel(0)
+        fp.close()
+    except:
+        print('ftp上传文件失败')
+
+
 # 上传ipa到ftp
-def upload_ipa_to_ftp(ftp, server_info, project_path, project_scheme, app_name, app_version):
-    build_path = get_build_path(project_path)
-    local_path = os.path.join(build_path, '%s.ipa' % project_scheme)
+def upload_ipas_to_ftp(ftp, project_path, project_scheme, app_name, app_version):
+    cache_path = get_build_cache_path(project_path)
 
     path = ftp_root_path
-    app_folder = '%s_iOS' % app_name
     version_folder = app_version
-    filename = '%s-(%s).ipa' % (server_info, time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()))
-    remote_path = os.path.join(path, app_folder, version_folder, filename)
-
+    app_folder = '%s_iOS' % app_name
     create_path(ftp, path, [app_folder, version_folder])
 
-    buf_size = 1024
-    fp = open(local_path, 'rb')
-    ftp.storbinary('STOR ' + remote_path, fp, buf_size)
-    # print('ftp上传%s:%s' % (['失败', '成功'][ret == 0], filename))
-    ftp.set_debuglevel(0)
-    fp.close()
+    list = os.listdir(cache_path)
+    for i in range(0,len(list)):
+        file_path = os.path.join(cache_path,list[i])
+        if os.path.isfile(file_path) and 'ipa' in file_path:
+            local_path = file_path
+            filename = '%s-(%s).ipa' % (os.path.basename(file_path), time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()))
+            remote_path = os.path.join(path, app_folder, version_folder, filename)
+
+            start_upload_ftp(ftp, local_path, remote_path)
+
+
+# 邮箱登录
+@retry(tries=3, delay=1, jitter=2)
+def login_email():
+    try:
+        smtp = smtplib.SMTP()
+        smtp.connect(smtp_host, '25')
+        smtp.login(email_user, email_password)
+        return smtp
+    except:
+        print('邮箱登录失败')
+
+
+# 开始发送邮件
+@retry(tries=3, delay=1, jitter=2)
+def start_send_email(smtp, msg):
+    try:
+        smtp.sendmail(email_user, recipient_addresses, str(msg))
+    except:
+        print('邮件发送失败')
+
+
+# 发送邮件
+def send_email(app_name, app_version, project_path):
+    if recipient_addresses == '':
+        return
+
+    cache_path = get_build_cache_path(project_path)
+
+    smtp = login_email()
+
+    subject = '%s_iOS_%s安装包' % (app_name, app_version)
+    content = ''
+
+    list = os.listdir(cache_path)
+    for i in range(0,len(list)):
+        file_path = os.path.join(cache_path,list[i])
+        if os.path.isfile(file_path) and 'ipa' in file_path:
+
+            msg = email.mime.multipart.MIMEMultipart()
+            msg['from'] = email_user
+            msg['to'] = recipient_addresses
+            msg['subject'] = subject
+            content = content
+            txt = email.mime.text.MIMEText(content, 'plain', 'utf-8')
+            msg.attach(txt)
+
+            # 添加附件，传送文件
+            part = MIMEApplication(open(file_path, 'rb').read())
+            part.add_header('Content-Disposition', 'attachment', filename=os.path.basename(file_path))
+            msg.attach(part)
+            start_send_email(smtp, msg)
+
+    smtp.quit()
 
 
 # 上传测试 预发 线上包到ftp
 def upload_to_ftp(project_path, project_scheme, git_branch, app_name, app_version):
-    ftp = ftpconnect(ftp_ip, ftp_user, ftp_pwd)
+    make_cache_path(project_path)
     for server_info in server_infos:
         cmd = 'python3 AutoPackaging.py %s %s NO NO' % (server_info, git_branch)
-        ret = process_call(cmd, 'ipa打包')
-        if ret == 0:
-            upload_ipa_to_ftp(ftp, server_info, project_path, project_scheme, app_name, app_version)
+        if process_call(cmd, 'ipa打包') == 0:
+            if add_cache(project_path, project_scheme, server_info) != 0:
+                raise Exception('未找到ipa')
+
+    ftp = ftpconnect(ftp_ip, ftp_user, ftp_pwd)
+    upload_ipas_to_ftp(ftp, project_path, project_scheme, app_name, app_version)
+    ftp.quit()
+
     title = get_title('', app_name, app_version)
     print('#KEY#FIR#%s#KEY#%s#KEY#%s#KEY#%s#KEY#FIR#' % (git_branch, title, '', ''))
 
-    ftp.quit()
+#    send_email(app_name, app_version, project_path)
 
 
 # 获取工作目录
@@ -139,21 +258,31 @@ def get_project_path():
     # 删除空格
     project_path = upper_path.strip()
 
+    project_name = os.path.basename(upper_path)
+
     # 工程文件
-    xcodeproj_path = upper_path + '/%s.xcodeproj' % os.path.basename(upper_path)
+    xcodeproj_path = upper_path + '/%s.xcodeproj' % project_name
     pbxproj_path = os.path.join(xcodeproj_path, 'project.pbxproj')
     
     # info.plist
-    info_plist_path = upper_path + '/%s/info.plist' % os.path.basename(upper_path)
+    info_plist_path = upper_path + '/%s/info.plist' % project_name
 
-    logo_path = upper_path + '/%s/Assets.xcassets/AppIcon.appiconset/iOS60@2x.png' % os.path.basename(upper_path)
+    # entitlements
+    entitlements_path = upper_path + '/%s/%s.entitlements' % (project_name, project_name)
+    
+    logo_path = upper_path + '/%s/Assets.xcassets/AppIcon.appiconset/iOS60@2x.png' % project_name
 
-    return current_path, project_path, pbxproj_path, info_plist_path, logo_path
+    return current_path, project_path, pbxproj_path, info_plist_path, logo_path, entitlements_path
 
 
 # 获取build目录
 def get_build_path(project_path):
     return os.path.join(project_path, 'build')
+
+
+# 获取build目录
+def get_build_cache_path(project_path):
+    return os.path.join(get_build_path(project_path), '.buildcache')
 
 
 # 获取dsymtool工具目录
@@ -171,8 +300,9 @@ def get_app_info(info_plist_path, pbxproj_path):
     pl = read_plist(info_plist_path)
     app_name = pl['CFBundleName']
     app_version = pl['CFBundleShortVersionString']
-    
-    return app_name, app_version
+    app_build_version = pl['CFBundleVersion']
+
+    return app_name, app_version, app_build_version
 
 
 # 获取打包信息
@@ -190,13 +320,48 @@ def get_title(server_info, app_name, app_version):
 
 
 # 替换服务器URL
-def replace_server_url(pbxproj_path, server_type):
+def replace_server(pbxproj_path, server_type, is_use_default_plist, entitlements_path, code_sign_teamID):
     # 修改服务器URL
     replace_cmd = ("sed -i '' 's/\"isAppOnline=.*\"/\"isAppOnline=%i\"/g' " % server_type) + pbxproj_path
     replace_cmd2 = ("sed -i '' 's/YS_DYNAMIC_URL_KEY/\"isAppOnline=%i\"/g' " % server_type) + pbxproj_path
-    
     process_call(replace_cmd, '替换服务器')
     process_call(replace_cmd2, '替换服务器2')
+    
+    if is_use_default_plist == 'NO':
+        # 用其他证书打包时关闭推送选项
+        push_cmd = ("sed -i '' 's/<key>aps-environment<\/key>/<key>1<\/key>/g' ") + entitlements_path
+        push_cmd1 = ("sed -i '' 's/<string>development<\/string>/<string>1<\/string>/g' ") + entitlements_path
+        process_call(push_cmd, '关闭推送')
+        process_call(push_cmd1, '关闭推送1')
+
+        # 用其他证书打包时替换teamID
+        replace_teamID_cmd = ("sed -i '' 's/DevelopmentTeam = .*;/DevelopmentTeam = %s;/g' " % code_sign_teamID) + pbxproj_path
+        replace_teamID_cmd1 = ("sed -i '' 's/DEVELOPMENT_TEAM = .*;/DEVELOPMENT_TEAM = %s;/g' " % code_sign_teamID) + pbxproj_path
+        process_call(replace_teamID_cmd, '替换teamID')
+
+        # 用其他证书打包时替换PROVISIONING_PROFILE
+#        PROVISIONING_PROFILE = "a52136bd-d9e9-4d51-8ab3-0fa07ae52d2b";
+#        PROVISIONING_PROFILE_SPECIFIER = "通用adhoc";
+
+
+# 服务器参数替换回来
+def replace_back_server(pbxproj_path, server_type, is_use_default_plist, entitlements_path, app_origin_teamID):
+    # 修改服务器URL
+    replace_cmd = ("sed -i '' 's/\"isAppOnline=.*\"/YS_DYNAMIC_URL_KEY/g' ") + pbxproj_path
+    process_call(replace_cmd, '服务器参数替换回来')
+
+    if is_use_default_plist == 'NO':
+        # 用其他证书打包时打开推送选项
+        push_cmd = ("sed -i '' 's/<key>1<\/key>/<key>aps-environment<\/key>/g' ") + entitlements_path
+        push_cmd1 = ("sed -i '' 's/<string>1<\/string>/<string>development<\/string>/g' ") + entitlements_path
+        process_call(push_cmd, '关闭推送')
+        process_call(push_cmd1, '关闭推送')
+
+        # 用其他证书打包时替换teamID
+        replace_teamID_cmd = ("sed -i '' 's/DevelopmentTeam = .*;/DevelopmentTeam = %s;/g' " % app_origin_teamID) + pbxproj_path
+        replace_teamID_cmd1 = ("sed -i '' 's/DEVELOPMENT_TEAM = .*;/DEVELOPMENT_TEAM = %s;/g' " % app_origin_teamID) + pbxproj_path
+        process_call(replace_teamID_cmd, '替换teamID')
+        process_call(replace_teamID_cmd1, '替换teamID1')
 
 
 # 获取当前证书配置信息 UUID
@@ -213,17 +378,20 @@ def replace_server_url(pbxproj_path, server_type):
 #     return cer_plist[key_characters]
 
 # 动态获取当前证书配置信息
-def get_project_info(project_path,  file_path, plist_name):
+def get_project_info(project_path,  file_path, plist_name,):
     with open(file_path, 'r', encoding='UTF-8') as f:
         pbxproj = f.read()
     code_sign_identity = re.findall(r'CODE_SIGN_IDENTITY = "(.*?)\s\(.*?\)"', pbxproj)[1]
+
     app_bundleid = re.findall(r'PRODUCT_BUNDLE_IDENTIFIER = (.+?);', pbxproj)[0]
+    app_origin_teamID = re.findall(r'DevelopmentTeam = (.+?);', pbxproj)[0]
 
     profile_plist_path = os.path.join(get_packing_path(project_path), plist_name)
     pl = read_plist(profile_plist_path)
     provisioning_profile_specifier = pl['provisioningProfiles'][app_bundleid]
+    code_sign_teamID = pl['teamID']
 
-    return code_sign_identity, provisioning_profile_specifier, app_bundleid
+    return code_sign_identity, provisioning_profile_specifier, app_bundleid, app_origin_teamID, code_sign_teamID
 
 
 # 获取当前scheme
@@ -239,14 +407,14 @@ def get_scheme():
 
 # 获取fir app的最新一条下载地址
 def get_fir_release_url(fir_short_path):
-    latest_url = 'https://download.fir.im/%s' % fir_short_path
+    latest_url = 'https://download.fir.im/%s' % fir_short_path;
     json = requests.get(latest_url).json()
     release_id = json['app']['releases']['master']['id']
     return 'https://fir.im/%s?release_id=%s' % (fir_short_path, release_id)
 
 
 # 上传到appstore
-@retry(tries=5, delay=1, jitter=2)
+@retry(tries=3, delay=1, jitter=2)
 def upload_store(ipa_path):
     altool = '/Applications/Xcode.app/Contents/Applications/Application\ Loader.app/Contents/Frameworks/ITunesSoftwareService.framework/Versions/A/Support/altool'
     
@@ -260,7 +428,7 @@ def upload_store(ipa_path):
 
 
 # 上传到fir
-@retry(tries=5, delay=1, jitter=2)
+@retry(tries=3, delay=1, jitter=2)
 def upload_fir(ipa_path, short_path):
     fir_cmd = 'fir publish %s --token=%s --short=%s -Q' % (ipa_path, fir_token, short_path)
     ret = process_call(fir_cmd, '上传ipa到fir')
@@ -355,6 +523,35 @@ def get_qr_image(image_path, app_bundleid):
     return image_url
 
 
+# 上传dysm文件
+def upload_dsym(project_path, app_version, app_build_version, app_bundleid):
+    version = '%s(%s)' % (app_version, app_build_version)
+
+    dsym_cache_path = os.path.join(get_dsym_path(project_path), '.dsymcache')
+
+    dsym_file_path = ''
+    dsym_file_name = ''
+    
+    print('dsym_cache_path: ', dsym_cache_path)
+    
+    if not os.path.exists(dsym_cache_path):
+        print('dsym cache路径不存在')
+        return
+    
+    list = os.listdir(dsym_cache_path)
+    for i in range(0, len(list)):
+        dsym_file_path = os.path.join(dsym_cache_path,list[i])
+        dsym_file_name = os.path.basename(dsym_file_path)
+
+    if dsym_file_path == '':
+        return
+
+    dsym_url = 'http://bugly.qq.com/upload/dsym?app=%s&pid=2&ver=%s&n=%s&key=%s&bid=%s' % (bugly_app_id, version, dsym_file_name, bugly_app_key, app_bundleid)
+
+    dsym_cmd = 'curl --header "Content-Type:application/zip" --data-binary "@%s" "%s" --verbose' % (dsym_file_path, dsym_url)
+    process_call(dsym_cmd, '上传dsym到Bugly')
+
+
 # 钉钉测试消息
 def send_dev_message(fir_url, git_branch, ding_send_texts, title, app_bundleid, project_path, is_send_ding, logo_path):
     image_path = make_qr(fir_url, project_path, logo_path)
@@ -434,14 +631,9 @@ def clean_project_build(project_path):
 
 
 # pod update
-@retry(tries=5, delay=1, jitter=2)
 def pod_update(project_path):
     cmd = 'cd %s;pod update --verbose --no-repo-update' % project_path
-    ret = process_call(cmd, 'pod update ')
-    if ret != 0:
-        update_cmd = 'pod install --repo-update'
-        process_call(update_cmd, 'pod repo update ')
-        raise Exception('pod update 失败')
+    process_call(cmd, 'pod update ')
 
 
 # 步骤二 构建版本
@@ -457,7 +649,9 @@ def build_workspace(project_path, project_scheme, configuration, project_team, p
     # buildCmd = 'cd ../..;xcodebuild -workspace %s.xcworkspace -scheme %s -sdk iphoneos -configuration %s clean archive -archivePath %s  CODE_SIGN_IDENTITY="%s" PROVISIONING_PROFILE="%s"' % (
     # project_scheme, project_scheme, configuration, build_xcarchive, project_team, project_uuid)
     build_cmd = 'cd ../..;xcodebuild -workspace %s.xcworkspace -scheme %s -sdk iphoneos -configuration %s clean archive -archivePath %s  CODE_SIGN_IDENTITY="%s" PROVISIONING_PROFILE_SPECIFIER="%s"' % (project_name, project_scheme, configuration, build_xcarchive, project_team, profile_name)
-    process_call(build_cmd, '构建版本')
+    
+    if process_call(build_cmd, '构建版本') != 0:
+        raise Exception('构建版本失败')
 
 
 # 步骤三 生成配置ipa包
@@ -467,8 +661,10 @@ def build_ipa(project_path, option_plist, project_scheme):
     if os.path.exists(build_path):
         sign_cmd = 'xcodebuild -exportArchive -archivePath %s/%s.xcarchive -exportOptionsPlist %s -exportPath %s' % (
             build_path, project_name, option_plist, build_path)
-        process_call(sign_cmd, '导出ipa')
-
+        
+        if process_call(sign_cmd, '导出ipa') != 0:
+            raise Exception('导出ipa失败')
+        
         ipa_path = os.path.join(build_path, '%s.ipa' % project_scheme)
         return ipa_path
     else:
@@ -512,11 +708,11 @@ def main():
     
     publish_appstore = 0
 
-    server_info = 'TEST'
     git_branch = 'dev'
     is_send_ding = 'NO'
     is_upload = 'YES'
     ding_send_texts = []
+    is_use_default_plist = 'YES'
     
     for index, item in enumerate(sys.argv):
         if index == 1:
@@ -527,6 +723,8 @@ def main():
             is_send_ding = item
         elif index == 4:
             is_upload = item
+        elif index == 5:
+            is_use_default_plist = item
         else:
             if index != 0:
                 ding_send_texts.append(item)
@@ -537,15 +735,20 @@ def main():
     #####################################################################
 
     # 获取工作目录 1.当前脚本目录 2.项目目录 3.pbxproj文件路径
-    current_path, project_path, pbxproj_path, info_plist_path, logo_path = get_project_path()
+    current_path, project_path, pbxproj_path, info_plist_path, logo_path, entitlements_path = get_project_path()
 
     # 获取工程文件中的证书配置信息  0 adhoc  1 appstore
     configuration = 'Release'
     plist_name = ['adhoc.plist', 'store.plist'][publish_appstore == 1]
-    project_team, profile_name, app_bundleid = get_project_info(project_path, pbxproj_path, plist_name)
+    if is_use_default_plist == 'NO':
+        plist_name = other_sign_plist
+
+    project_team, profile_name, app_bundleid, app_origin_teamID, code_sign_teamID = get_project_info(project_path, pbxproj_path, plist_name)
+    if is_use_default_plist == 'NO':
+        code_sign_identity = other_sign_identity
 
     # 获取APP信息 1.APP 名字 2.APP版本号
-    app_name, app_version = get_app_info(info_plist_path, pbxproj_path)
+    app_name, app_version, app_build_version = get_app_info(info_plist_path, pbxproj_path)
 
     # 获取当前scheme
     project_scheme = get_scheme()
@@ -558,7 +761,8 @@ def main():
         server_type, publish_appstore = get_publish_info(server_info)
 
     # 替换服务器URL
-    replace_server_url(pbxproj_path, server_type)
+    replace_server(pbxproj_path, server_type, is_use_default_plist, entitlements_path, code_sign_teamID)
+
 
     #####################################################################
     #####################################################################
@@ -580,6 +784,12 @@ def main():
 
     # 步骤五  发送钉钉消息branch
     send_message(fir_url, git_branch, server_info, is_send_ding, ding_send_texts, app_name, app_version, app_bundleid, publish_appstore, project_path, logo_path)
+
+    # 上传dysm文件
+    upload_dsym(project_path, app_version, app_build_version, app_bundleid)
+
+    # 服务器参数替换回来
+    replace_back_server(pbxproj_path, server_type, is_use_default_plist, entitlements_path, app_origin_teamID)
 
 
 if __name__ == '__main__':

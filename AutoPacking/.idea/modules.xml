@@ -2,6 +2,9 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
+      <module fileurl="file:///private/var/folders/1w/6658f9y129s6p7dybrsdlnch0000gn/T/AutoPackaging.py/.idea/AutoPackaging.py.iml" filepath="/private/var/folders/1w/6658f9y129s6p7dybrsdlnch0000gn/T/AutoPackaging.py/.idea/AutoPackaging.py.iml" />
+      <module fileurl="file:///private/var/folders/1w/6658f9y129s6p7dybrsdlnch0000gn/T/AutoPackaging.py/.idea/AutoPackaging.py.iml" filepath="/private/var/folders/1w/6658f9y129s6p7dybrsdlnch0000gn/T/AutoPackaging.py/.idea/AutoPackaging.py.iml" />
+      <module fileurl="file:///private/var/folders/1w/6658f9y129s6p7dybrsdlnch0000gn/T/AutoPackaging1.py/.idea/AutoPackaging1.py.iml" filepath="/private/var/folders/1w/6658f9y129s6p7dybrsdlnch0000gn/T/AutoPackaging1.py/.idea/AutoPackaging1.py.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/AutoPacking.iml" filepath="$PROJECT_DIR$/.idea/AutoPacking.iml" />
     </modules>
   </component>
